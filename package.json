@@ -1,0 +1,21 @@
+{
+  "name": "capital-allocator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "tsx src/index.ts",
+    "allocate": "tsx src/allocate.ts",
+    "rebalance": "tsx src/rebalance.ts",
+    "report": "tsx src/report.ts",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
