@@ -1,93 +1,62 @@
 import 'dotenv/config';
-import { readJson, writeJson } from './persistence.js';
-import { allocateCapital, calculateExpectedReturn } from './allocator.js';
-import { suggestRebalance } from './rebalance.js';
-import { evaluateRiskGate } from './risk.js';
-import type { AllocationConfig, StrategyMetrics } from './types.js';
+import { readConfig } from './config.js';
+import { runCycle } from './cycle.js';
+import { emitEvent, readJsonSafe, statePaths, type AllocationProposal } from './mm-contract.js';
+import { formatProposalTable } from './report.js';
 
-const totalCapital = Number(process.env.TOTAL_CAPITAL ?? '1000');
-const metricsPath = process.env.STRATEGY_METRICS_PATH ?? '.state/strategy-metrics.json';
-const allocationPath = process.env.TARGET_ALLOCATION_PATH ?? '.state/allocations.json';
-const ledgerPath = process.env.LEDGER_PATH ?? '.state/allocation-ledger.json';
+const args = process.argv.slice(2);
 
-const defaultMetrics: StrategyMetrics[] = [
-  {
-    name: 'solana-trader',
-    totalTrades: 12,
-    winRate: 0.66,
-    avgProfit: 0.08,
-    totalReturn: 0.22,
-    sharpeRatio: 1.4,
-    maxDrawdown: 0.18,
-    capital: 350,
-    status: 'active',
-    lastUpdated: new Date().toISOString(),
-  },
-  {
-    name: 'liquidation-hunter',
-    totalTrades: 5,
-    winRate: 0.8,
-    avgProfit: 0.14,
-    totalReturn: 0.31,
-    sharpeRatio: 2.4,
-    maxDrawdown: 0.12,
-    capital: 300,
-    status: 'active',
-    lastUpdated: new Date().toISOString(),
-  },
-  {
-    name: 'arbitrage-bot',
-    totalTrades: 7,
-    winRate: 0.7,
-    avgProfit: 0.1,
-    totalReturn: 0.18,
-    sharpeRatio: 1.1,
-    maxDrawdown: 0.21,
-    capital: 200,
-    status: 'active',
-    lastUpdated: new Date().toISOString(),
-  },
-];
-
-const config: AllocationConfig = {
-  totalCapital,
-  riskProfile: 'moderate',
-  minStrategyCapital: Number(process.env.MIN_STRATEGY_CAPITAL ?? '10'),
-  rebalancingTolerancePct: Number(process.env.REBALANCE_TOLERANCE_PCT ?? '10'),
-};
-
-const metrics = await readJson<StrategyMetrics[]>(metricsPath, defaultMetrics);
-const currentAllocations = await readJson<Record<string, number>>(allocationPath, {
-  'solana-trader': 350,
-  'liquidation-hunter': 300,
-  'arbitrage-bot': 200,
-});
-
-const desiredAllocations = allocateCapital(metrics, config);
-const rebalance = suggestRebalance(metrics, currentAllocations, totalCapital, config.rebalancingTolerancePct);
-const expectedReturn = calculateExpectedReturn(metrics);
-
-console.log('📊 Capital allocator snapshot');
-console.log(`Expected return: ${expectedReturn.toFixed(2)}%`);
-
-for (const metric of metrics) {
-  const gate = evaluateRiskGate(metric);
-  console.log(`${metric.name}: risk=${gate.score} allowed=${gate.allowed}`);
+async function printReport(): Promise<void> {
+  const proposal = await readJsonSafe<AllocationProposal | null>(statePaths.proposal(), null);
+  if (!proposal || proposal.schema !== 'mm.allocation-proposal/v1') {
+    console.log(`No allocation proposal at ${statePaths.proposal()} — run \`npm run once\` first.`);
+    return;
+  }
+  console.log(formatProposalTable(proposal));
 }
 
-for (const decision of rebalance) {
-  console.log(`${decision.strategy}: ${decision.currentAllocation.toFixed(2)} -> ${decision.recommendedAllocation.toFixed(2)} (${decision.adjustmentPercent.toFixed(1)}%)`);
+async function fatal(err: unknown): Promise<never> {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`[capital-allocator] fatal: ${message}`);
+  await emitEvent({ source: 'capital-allocator', level: 'error', type: 'fatal', message });
+  process.exit(1);
 }
 
-console.log('Desired allocation:');
-for (const [strategy, amount] of Object.entries(desiredAllocations)) {
-  console.log(`- ${strategy}: $${amount.toFixed(2)}`);
+async function main(): Promise<void> {
+  if (args.includes('report')) return printReport();
+
+  const config = readConfig(); // throws ConfigError on invalid env -> exit 1
+  if (args.includes('--once')) {
+    await runCycle(config);
+    return;
+  }
+
+  console.log(`[capital-allocator] loop mode, interval ${config.intervalMs} ms`);
+  let stopping = false;
+  let wake: (() => void) | undefined;
+  const stop = () => {
+    stopping = true;
+    wake?.();
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+  while (!stopping) {
+    try {
+      await runCycle(config);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[capital-allocator] cycle failed: ${message}`);
+      await emitEvent({ source: 'capital-allocator', level: 'error', type: 'cycle-failed', message });
+    }
+    if (stopping) break;
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, config.intervalMs);
+      wake = () => {
+        clearTimeout(t);
+        resolve();
+      };
+    });
+  }
 }
 
-await writeJson(allocationPath, desiredAllocations);
-await writeJson(ledgerPath, {
-  timestamp: new Date().toISOString(),
-  allocations: desiredAllocations,
-  expectedReturn,
-  strategies: metrics,
-});
+main().catch(fatal);

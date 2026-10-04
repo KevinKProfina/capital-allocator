@@ -1,21 +1,25 @@
 {
   "name": "capital-allocator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
-    "allocate": "tsx src/allocate.ts",
-    "rebalance": "tsx src/rebalance.ts",
-    "report": "tsx src/report.ts",
-    "check": "tsc --noEmit"
+    "once": "tsx src/index.ts --once",
+    "report": "tsx src/index.ts report",
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.6.1"
   },
   "devDependencies": {
-    "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
   }
 }
